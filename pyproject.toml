@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqlite-workqueue"
+version = "0.1.0"
+description = "A local persistent job queue with leases and bounded retries"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.scripts]
+workqueue = "workqueue.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
