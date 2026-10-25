@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 from workqueue import LeaseLost, Queue, work_once
@@ -146,6 +147,79 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(LeaseLost):
             work_once(self.queue, slow)
 
+    def test_heartbeat_keeps_a_long_running_handler_owned(self):
+        job_id = self.queue.enqueue({})
+        renewed = threading.Event()
+        renew = self.queue.renew
+
+        def signal_renewal(job, **kwargs):
+            renew(job, **kwargs)
+            renewed.set()
+
+        self.queue.renew = signal_renewal
+
+        def slow(payload):
+            self.now += 2
+            self.assertTrue(renewed.wait(2), "heartbeat did not renew the lease")
+            self.now += 2
+            self.assertIsNone(self.queue.claim())
+
+        result = work_once(self.queue, slow, lease_seconds=3, heartbeat_interval=0.01)
+        self.assertEqual(result.state, "succeeded")
+        self.assertFalse(any(t.name == f"workqueue-lease-{job_id}"
+                             for t in threading.enumerate()))
+
+    def test_heartbeat_failure_prevents_acknowledgment(self):
+        job_id = self.queue.enqueue({})
+        attempted = threading.Event()
+
+        def failed_renewal(job, **kwargs):
+            attempted.set()
+            raise LeaseLost("lease replaced")
+
+        self.queue.renew = failed_renewal
+
+        def slow(payload):
+            self.assertTrue(attempted.wait(2), "heartbeat was not attempted")
+
+        with self.assertRaisesRegex(LeaseLost, "lease replaced"):
+            work_once(self.queue, slow, heartbeat_interval=0.01)
+        self.assertEqual(self.queue.get(job_id).state, "running")
+        self.assertFalse(any(t.name == f"workqueue-lease-{job_id}"
+                             for t in threading.enumerate()))
+
+    def test_invalid_heartbeat_does_not_consume_an_attempt(self):
+        job_id = self.queue.enqueue({})
+        for interval in (0, -1, 5, float("nan"), float("inf")):
+            with self.subTest(interval=interval), self.assertRaises(ValueError):
+                work_once(self.queue, lambda payload: None, lease_seconds=5,
+                          heartbeat_interval=interval)
+        self.assertEqual(self.queue.get(job_id).attempts, 0)
+
+    def test_handler_failure_stops_heartbeat_and_schedules_retry(self):
+        job_id = self.queue.enqueue({})
+
+        def broken(payload):
+            raise RuntimeError("offline")
+
+        result = work_once(self.queue, broken, heartbeat_interval=1)
+        self.assertEqual(result.state, "pending")
+        self.assertEqual(result.last_error, "RuntimeError: offline")
+        self.assertFalse(any(t.name == f"workqueue-lease-{job_id}"
+                             for t in threading.enumerate()))
+
+    def test_interruption_stops_heartbeat_without_acknowledgment(self):
+        job_id = self.queue.enqueue({})
+
+        def interrupted(payload):
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            work_once(self.queue, interrupted, heartbeat_interval=1)
+        self.assertEqual(self.queue.get(job_id).state, "running")
+        self.assertFalse(any(t.name == f"workqueue-lease-{job_id}"
+                             for t in threading.enumerate()))
+
     def test_invalid_inputs_do_not_create_jobs(self):
         for kwargs in ({"max_attempts": 0}, {"max_attempts": True}, {"max_attempts": 1.5},
                        {"delay": -1}, {"delay": float("nan")},
@@ -200,7 +274,8 @@ class CLITests(unittest.TestCase):
         result = self.run_cli("enqueue", '{"message":"hello"}')
         self.assertEqual(result.returncode, 0, result.stderr)
         job_id = result.stdout.strip()
-        result = self.run_cli("worker", "workqueue.examples:echo", "--once")
+        result = self.run_cli("worker", "workqueue.examples:echo", "--once",
+                              "--heartbeat-interval", "1")
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.run_cli("show", job_id)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -217,6 +292,15 @@ class CLITests(unittest.TestCase):
         job_id = result.stdout.strip()
         result = self.run_cli("worker", "no_such_module:handler", "--once")
         self.assertEqual(result.returncode, 2)
+        self.assertEqual(Queue(self.path).get(job_id).attempts, 0)
+
+    def test_invalid_heartbeat_does_not_claim_job(self):
+        result = self.run_cli("enqueue", "{}")
+        job_id = result.stdout.strip()
+        result = self.run_cli("worker", "workqueue.examples:echo", "--once",
+                              "--heartbeat-interval", "60")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("shorter than lease_seconds", result.stderr)
         self.assertEqual(Queue(self.path).get(job_id).attempts, 0)
 
 

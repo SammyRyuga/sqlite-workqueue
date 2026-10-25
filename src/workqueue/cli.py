@@ -25,6 +25,8 @@ def main(argv=None) -> int:
     worker.add_argument("handler", help="module:function")
     worker.add_argument("--once", action="store_true")
     worker.add_argument("--lease-seconds", type=float, default=60)
+    worker.add_argument("--heartbeat-interval", type=float,
+                        help="Renew leases at this interval in seconds (disabled by default)")
     worker.add_argument("--poll-interval", type=float, default=1)
     args = parser.parse_args(argv)
     try:
@@ -42,7 +44,8 @@ def main(argv=None) -> int:
             _seconds(args.lease_seconds, "lease_seconds", positive=True)
             _seconds(args.poll_interval, "poll_interval", positive=True)
             while True:
-                job = work_once(queue, handler, lease_seconds=args.lease_seconds)
+                job = work_once(queue, handler, lease_seconds=args.lease_seconds,
+                                heartbeat_interval=args.heartbeat_interval)
                 if job:
                     print(json.dumps({"id": job.id, "state": job.state,
                                       "attempts": job.attempts}), flush=True)

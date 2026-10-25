@@ -51,6 +51,19 @@ the job to retry; error text is kept on the job. A one-shot worker exits with 0
 after success or when no job is available, 1 after a handler failure, and 2 for
 an invalid command input or a lost lease. Ctrl+C exits with 130.
 
+For long-running handlers, enable background lease renewal:
+
+```sh
+workqueue --db jobs.sqlite3 worker my_handlers:handle --lease-seconds 60 --heartbeat-interval 15
+```
+
+The interval must be positive and shorter than the lease duration. The Python
+equivalent is `work_once(queue, handler, lease_seconds=60, heartbeat_interval=15)`.
+The renewal thread stops and is joined when the handler exits, including on
+interruption. If renewal fails, the worker propagates that error without
+acknowledging or retrying the job under uncertain ownership. Recovery happens
+through the normal lease-expiry mechanism.
+
 ## Claims and recovery
 
 Jobs move from `pending` to `running`, then to `succeeded` or back to `pending`.
@@ -82,9 +95,11 @@ time; choose an interval that keeps the lease alive.
 - All workers must use a local database on the same host. Do not put the SQLite
   WAL database on a network filesystem or file-sync folder. SQLite serializes
   writers; this is not a replacement for a multi-host broker.
-- There is no automatic heartbeat. Set a lease longer than your handler's
-  expected runtime, or use the direct API to renew it. An expired handler may
-  overlap a new attempt, even though it can no longer acknowledge the job.
+- Heartbeats are opt-in. Without them, set a lease longer than your handler's
+  expected runtime, or use the direct API to renew it. A heartbeat cannot
+  interrupt a handler that has already started or guarantee renewal during a
+  process pause. An expired handler may overlap a new attempt, even though it
+  can no longer acknowledge the job.
 - Scheduling uses the host wall clock. Significant clock changes can affect
   delays and lease expiry.
 - Handlers are trusted local Python code, not a sandbox. Database payloads and
