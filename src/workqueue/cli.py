@@ -21,6 +21,7 @@ def main(argv=None) -> int:
     enqueue.add_argument("--delay", type=float, default=0)
     show = commands.add_parser("show", help="Inspect a job")
     show.add_argument("job_id")
+    commands.add_parser("stats", help="Count queue states without claiming or recovering jobs")
     worker = commands.add_parser("worker", help="Run a trusted Python handler")
     worker.add_argument("handler", help="module:function")
     worker.add_argument("--once", action="store_true")
@@ -36,6 +37,8 @@ def main(argv=None) -> int:
                                 retry_delay=args.retry_delay, delay=args.delay))
         elif args.command == "show":
             print(json.dumps(asdict(queue.get(args.job_id))))
+        elif args.command == "stats":
+            print(json.dumps(queue.stats()))
         else:
             module, name = args.handler.split(":", 1)
             handler = getattr(importlib.import_module(module), name)

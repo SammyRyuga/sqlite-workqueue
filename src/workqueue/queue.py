@@ -109,6 +109,21 @@ class Queue:
             raise KeyError(job_id)
         return self._job(row)
 
+    def stats(self) -> dict[str, int]:
+        """Count queue states in one snapshot without recovering expired claims."""
+        now = self.clock()
+        with self._connect() as db:
+            row = db.execute("""SELECT COUNT(*) AS total,
+                COUNT(CASE WHEN state='pending' THEN 1 END) AS pending,
+                COUNT(CASE WHEN state='running' THEN 1 END) AS running,
+                COUNT(CASE WHEN state='succeeded' THEN 1 END) AS succeeded,
+                COUNT(CASE WHEN state='failed' THEN 1 END) AS failed,
+                COUNT(CASE WHEN state='pending' AND available_at <= ? THEN 1 END) AS ready,
+                COUNT(CASE WHEN state='pending' AND available_at > ? THEN 1 END) AS delayed,
+                COUNT(CASE WHEN state='running' AND lease_until <= ? THEN 1 END) AS expired
+                FROM jobs""", (now, now, now)).fetchone()
+        return dict(row)
+
     def claim(self, *, lease_seconds: float = 60) -> Job | None:
         lease_seconds = _seconds(lease_seconds, "lease_seconds", positive=True)
         with self._transaction() as db:

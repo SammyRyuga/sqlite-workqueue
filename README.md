@@ -81,6 +81,21 @@ claim after another worker has reclaimed it. The next `claim()` requeues expired
 jobs immediately, or marks them failed if their attempt budget is exhausted.
 `get()` is a snapshot; it does not perform lease recovery itself.
 
+Inspect the queue without claiming jobs or recovering expired leases:
+
+```sh
+workqueue --db jobs.sqlite3 stats
+```
+
+The command prints JSON counts for `total`, `pending`, `running`, `succeeded`,
+`failed`, `ready`, `delayed` and `expired`. Python callers can use `queue.stats()`.
+`ready` and `delayed` split the pending jobs by their availability time; `expired`
+is the subset of running jobs whose leases have expired. These subsets overlap
+the state counts, so do not add all eight fields together. All counts come from
+one database snapshot. Inspection does not change job state or attempt counts;
+only the next `claim()` performs expiry recovery. Like the other CLI commands,
+opening a queue path still initializes its database if it does not exist.
+
 For direct API use, `queue.claim(lease_seconds=60)` returns a `Job` or `None`.
 Use `queue.complete(job)`, `queue.fail(job, "reason")` or
 `queue.renew(job, lease_seconds=60)` with that claim. These raise `LeaseLost` when

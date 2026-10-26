@@ -1,8 +1,10 @@
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import closing
 import json
 import multiprocessing
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -236,6 +238,48 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.queue.get("missing")
 
+    def test_empty_queue_stats_are_zero(self):
+        self.assertEqual(self.queue.stats(), {
+            "total": 0, "pending": 0, "running": 0, "succeeded": 0,
+            "failed": 0, "ready": 0, "delayed": 0, "expired": 0,
+        })
+
+    def test_stats_distinguish_ready_delayed_and_expired_jobs_without_recovery(self):
+        self.queue.enqueue({})
+        self.queue.complete(self.queue.claim())
+        self.queue.enqueue({}, max_attempts=1)
+        self.queue.fail(self.queue.claim(), "permanent error")
+        self.queue.enqueue({})
+        self.queue.claim(lease_seconds=20)
+        expired_id = self.queue.enqueue({})
+        self.queue.claim(lease_seconds=5)
+        self.queue.enqueue({})
+        self.queue.enqueue({}, delay=50)
+        self.now += 5
+        before = self.queue.get(expired_id)
+        self.assertEqual(self.queue.stats(), {
+            "total": 6, "pending": 2, "running": 2, "succeeded": 1,
+            "failed": 1, "ready": 1, "delayed": 1, "expired": 1,
+        })
+        self.assertEqual(self.queue.get(expired_id), before)
+
+    def test_stats_move_delayed_jobs_to_ready_at_availability_time(self):
+        self.queue.enqueue({}, delay=5)
+        self.assertEqual(self.queue.stats()["delayed"], 1)
+        self.now += 5
+        counts = self.queue.stats()
+        self.assertEqual((counts["pending"], counts["ready"], counts["delayed"]), (1, 1, 0))
+
+    def test_stats_read_committed_snapshot_while_another_connection_writes(self):
+        job_id = self.queue.enqueue({})
+        with closing(sqlite3.connect(self.path)) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE jobs SET state='succeeded' WHERE id=?", (job_id,))
+            counts = self.queue.stats()
+            self.assertEqual((counts["pending"], counts["succeeded"]), (1, 0))
+            writer.commit()
+        self.assertEqual(self.queue.stats()["succeeded"], 1)
+
     def test_multiple_processes_claim_each_job_once(self):
         job_ids = {self.queue.enqueue(i) for i in range(40)}
         with ProcessPoolExecutor(max_workers=4,
@@ -286,6 +330,15 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("workqueue:", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_stats_command_reports_pending_jobs_as_json(self):
+        self.assertEqual(self.run_cli("enqueue", "{}").returncode, 0)
+        self.assertEqual(self.run_cli("enqueue", "{}", "--delay", "3600").returncode, 0)
+        result = self.run_cli("stats")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        counts = json.loads(result.stdout)
+        self.assertEqual((counts["total"], counts["pending"], counts["ready"], counts["delayed"]),
+                         (2, 2, 1, 1))
 
     def test_invalid_handler_does_not_claim_job(self):
         result = self.run_cli("enqueue", "{}")
