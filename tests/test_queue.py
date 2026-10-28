@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import unittest
@@ -310,9 +311,36 @@ class CLITests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = str(Path(self.temp.name) / "cli.sqlite3")
 
-    def run_cli(self, *args):
+    def run_cli(self, *args, cwd=None):
         return subprocess.run([sys.executable, "-m", "workqueue", "--db", self.path, *args],
-                              capture_output=True, text=True, timeout=15)
+                              cwd=cwd, capture_output=True, text=True, timeout=15)
+
+    def test_module_entrypoint_imports_handler_from_current_directory(self):
+        directory = Path(self.temp.name)
+        (directory / "my_handlers.py").write_text(
+            "from pathlib import Path\ndef handle(payload):\n"
+            "    Path('handled.txt').write_text(payload['message'])\n",
+            encoding="utf-8")
+        result = self.run_cli("enqueue", '{"message":"local handler ran"}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        job_id = result.stdout.strip()
+        result = self.run_cli("worker", "my_handlers:handle", "--once", cwd=directory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((directory / "handled.txt").read_text(), "local handler ran")
+        self.assertEqual(Queue(self.path).get(job_id).state, "succeeded")
+
+    def test_installed_console_entrypoint_runs_packaged_handler(self):
+        executable = Path(sysconfig.get_path("scripts")) / (
+            "workqueue.exe" if os.name == "nt" else "workqueue")
+        result = self.run_cli("enqueue", '{"message":"packaged handler ran"}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        job_id = result.stdout.strip()
+        result = subprocess.run(
+            [str(executable), "--db", self.path, "worker", "workqueue.examples:echo", "--once"],
+            cwd=self.temp.name, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("packaged handler ran", result.stdout)
+        self.assertEqual(Queue(self.path).get(job_id).state, "succeeded")
 
     def test_enqueue_worker_show_round_trip(self):
         result = self.run_cli("enqueue", '{"message":"hello"}')

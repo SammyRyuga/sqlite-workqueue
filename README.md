@@ -36,14 +36,20 @@ print(queue.get(job_id).state)  # succeeded
 For your own worker, define a callable that accepts a decoded JSON payload:
 
 ```python
-# my_handlers.py, in your current directory or installed Python package
+# my_handlers.py, in your current directory
 def handle(payload):
     print(payload["message"].upper())
 ```
 
 ```sh
-workqueue --db jobs.sqlite3 worker my_handlers:handle
+python -m workqueue --db jobs.sqlite3 worker my_handlers:handle
 ```
+
+Use `python -m workqueue` for handlers in the current directory: Python includes
+that directory on its module search path. The installed `workqueue` command
+supports handlers in installed packages; it does not automatically import files
+from the working directory. Use the same Python environment where you installed
+the queue. Handler modules and their imports must be trusted Python code.
 
 Start that command in more than one terminal to run separate workers. Without
 `--once`, workers poll until interrupted. Handlers that raise an exception cause
@@ -54,7 +60,7 @@ an invalid command input or a lost lease. Ctrl+C exits with 130.
 For long-running handlers, enable background lease renewal:
 
 ```sh
-workqueue --db jobs.sqlite3 worker my_handlers:handle --lease-seconds 60 --heartbeat-interval 15
+python -m workqueue --db jobs.sqlite3 worker my_handlers:handle --lease-seconds 60 --heartbeat-interval 15
 ```
 
 The interval must be positive and shorter than the lease duration. The Python
