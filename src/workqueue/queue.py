@@ -35,6 +35,21 @@ def _seconds(value: float, name: str, *, positive: bool = False) -> float:
     return value
 
 
+def _enable_wal(db) -> None:
+    # Concurrent first-open WAL transitions can return BUSY without waiting.
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            remaining = deadline - time.monotonic()
+            code = getattr(exc, "sqlite_errorcode", 0)
+            if code & 255 != sqlite3.SQLITE_BUSY or remaining <= 0:
+                raise
+            time.sleep(min(0.01, remaining))
+
+
 class Queue:
     def __init__(self, path: str | Path, *, clock: Callable[[], float] = time.time):
         if str(path) == ":memory:":
@@ -42,7 +57,7 @@ class Queue:
         self.path = str(path)
         self.clock = clock
         with self._connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            _enable_wal(db)
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,

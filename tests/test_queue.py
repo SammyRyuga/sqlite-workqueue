@@ -11,8 +11,59 @@ import sysconfig
 import tempfile
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
 from workqueue import LeaseLost, Queue, work_once
+from workqueue.queue import _enable_wal
+
+
+def startup_barrier(barrier):
+    global startup
+    startup = barrier
+
+
+def enqueue_on_startup(path):
+    startup.wait(timeout=20)
+    return Queue(path).enqueue({"startup": True})
+
+
+class InitializationTests(unittest.TestCase):
+    def test_simultaneous_first_open_preserves_every_enqueue(self):
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as directory:
+            with ProcessPoolExecutor(max_workers=8, mp_context=context,
+                                     initializer=startup_barrier,
+                                     initargs=(context.Barrier(8),)) as pool:
+                for round_number in range(8):
+                    path = str(Path(directory) / f"startup-{round_number}.sqlite3")
+                    ids = list(pool.map(enqueue_on_startup, [path] * 8))
+                    queue = Queue(path)
+                    self.assertEqual(len(set(ids)), 8)
+                    self.assertEqual(queue.stats()["pending"], 8)
+                    self.assertTrue(all(queue.get(job_id).attempts == 0 for job_id in ids))
+
+    def test_wal_setup_does_not_retry_non_busy_errors(self):
+        error = sqlite3.OperationalError("disk I/O error")
+        error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+        db = Mock()
+        db.execute.side_effect = error
+        with patch("workqueue.queue.time.sleep") as sleep:
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                _enable_wal(db)
+        self.assertIs(caught.exception, error)
+        sleep.assert_not_called()
+
+    def test_wal_setup_stops_retrying_at_deadline(self):
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        db = Mock()
+        db.execute.side_effect = error
+        with patch("workqueue.queue.time.monotonic", side_effect=[100, 105]):
+            with patch("workqueue.queue.time.sleep") as sleep:
+                with self.assertRaises(sqlite3.OperationalError) as caught:
+                    _enable_wal(db)
+        self.assertIs(caught.exception, error)
+        sleep.assert_not_called()
 
 
 def drain(path):

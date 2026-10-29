@@ -128,7 +128,9 @@ time; choose an interval that keeps the lease alive.
   records into a shared database.
 - There is no cancellation, periodic scheduling, schema migration system,
   result storage or HTTP service yet. Database lock waits time out after five
-  seconds. This is an early implementation, not a production reliability claim.
+  seconds. Concurrent first-open WAL setup retries transient busy errors for up
+  to five seconds before propagating the error. This is an early implementation,
+  not a production reliability claim.
 
 ## Development
 
