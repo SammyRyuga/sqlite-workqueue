@@ -75,6 +75,11 @@ class Queue:
                 );
                 CREATE INDEX IF NOT EXISTS pending_jobs ON jobs(state, available_at, created_at);
                 CREATE INDEX IF NOT EXISTS leased_jobs ON jobs(state, lease_until);
+                CREATE TABLE IF NOT EXISTS enqueue_keys (
+                    key TEXT PRIMARY KEY,
+                    request TEXT NOT NULL,
+                    job_id TEXT NOT NULL UNIQUE
+                );
             """)
 
     @contextmanager
@@ -103,18 +108,36 @@ class Queue:
                       for name in Job.__dataclass_fields__})
 
     def enqueue(self, payload: Any, *, max_attempts: int = 3,
-                retry_delay: float = 1, delay: float = 0) -> str:
+                retry_delay: float = 1, delay: float = 0,
+                idempotency_key: str | None = None) -> str:
         if type(max_attempts) is not int or max_attempts < 1:
             raise ValueError("max_attempts must be a positive integer")
         retry_delay = _seconds(retry_delay, "retry_delay")
         delay = _seconds(delay, "delay")
+        if idempotency_key is not None and (
+                not isinstance(idempotency_key, str) or not idempotency_key):
+            raise ValueError("idempotency_key must be a nonempty string")
         encoded = json.dumps(payload, allow_nan=False)
+        request = None
+        if idempotency_key is not None:
+            request = json.dumps([json.loads(encoded), max_attempts, retry_delay, delay],
+                                 sort_keys=True, separators=(",", ":"))
         job_id, now = uuid4().hex, self.clock()
         with self._transaction() as db:
+            if idempotency_key is not None:
+                previous = db.execute("SELECT request, job_id FROM enqueue_keys WHERE key=?",
+                                      (idempotency_key,)).fetchone()
+                if previous is not None:
+                    if previous["request"] != request:
+                        raise ValueError("idempotency_key already used for a different request")
+                    return previous["job_id"]
             db.execute("""INSERT INTO jobs
                 (id,payload,state,max_attempts,retry_delay,available_at,created_at,updated_at)
                 VALUES (?,?,'pending',?,?,?,?,?)""",
                 (job_id, encoded, max_attempts, retry_delay, now + delay, now, now))
+            if idempotency_key is not None:
+                db.execute("INSERT INTO enqueue_keys (key,request,job_id) VALUES (?,?,?)",
+                           (idempotency_key, request, job_id))
         return job_id
 
     def get(self, job_id: str) -> Job:

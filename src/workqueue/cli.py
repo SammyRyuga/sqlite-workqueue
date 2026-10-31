@@ -19,6 +19,7 @@ def main(argv=None) -> int:
     enqueue.add_argument("--max-attempts", type=int, default=3)
     enqueue.add_argument("--retry-delay", type=float, default=1)
     enqueue.add_argument("--delay", type=float, default=0)
+    enqueue.add_argument("--idempotency-key", help="Reuse a job ID when retrying the same enqueue")
     show = commands.add_parser("show", help="Inspect a job")
     show.add_argument("job_id")
     commands.add_parser("stats", help="Count queue states without claiming or recovering jobs")
@@ -34,7 +35,8 @@ def main(argv=None) -> int:
         queue = Queue(args.db)
         if args.command == "enqueue":
             print(queue.enqueue(json.loads(args.payload), max_attempts=args.max_attempts,
-                                retry_delay=args.retry_delay, delay=args.delay))
+                                retry_delay=args.retry_delay, delay=args.delay,
+                                idempotency_key=args.idempotency_key))
         elif args.command == "show":
             print(json.dumps(asdict(queue.get(args.job_id))))
         elif args.command == "stats":

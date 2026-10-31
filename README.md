@@ -70,6 +70,28 @@ interruption. If renewal fails, the worker propagates that error without
 acknowledging or retrying the job under uncertain ownership. Recovery happens
 through the normal lease-expiry mechanism.
 
+## Retrying producer requests
+
+If a producer loses the response to an enqueue, retry it with a stable key:
+
+```python
+job_id = queue.enqueue({"order": 42}, idempotency_key="order:42")
+assert queue.enqueue({"order": 42}, idempotency_key="order:42") == job_id
+```
+
+The CLI accepts `enqueue PAYLOAD --idempotency-key KEY`. Keys are nonempty
+strings scoped to one database. Concurrent producers using the same key and
+request receive the same job ID. Reuse with different payload JSON or enqueue
+options (`max_attempts`, `retry_delay`, `delay`) raises `ValueError` (CLI exit 2).
+Object key order is ignored; other JSON representations remain significant.
+
+Keys remain reserved even after success or failure. Repeating a request does not
+reset attempts, reschedule delayed work, or restart a job. There is no key expiry
+or deletion API. Calls without a key always enqueue a new job. Opening an older
+queue adds the key table without changing its existing jobs. Producer
+deduplication does not prevent repeated handler side effects; delivery still
+requires idempotent handlers.
+
 ## Claims and recovery
 
 Jobs move from `pending` to `running`, then to `succeeded` or back to `pending`.

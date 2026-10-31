@@ -27,7 +27,25 @@ def enqueue_on_startup(path):
     return Queue(path).enqueue({"startup": True})
 
 
+def enqueue_same_key(path):
+    startup.wait(timeout=20)
+    return Queue(path).enqueue({"order": 42}, idempotency_key="order:42")
+
+
 class InitializationTests(unittest.TestCase):
+    def test_competing_producers_with_one_key_create_one_job(self):
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "deduplicated.sqlite3")
+            with ProcessPoolExecutor(max_workers=4, mp_context=context,
+                                     initializer=startup_barrier,
+                                     initargs=(context.Barrier(4),)) as pool:
+                ids = list(pool.map(enqueue_same_key, [path] * 4))
+            self.assertEqual(len(set(ids)), 1)
+            queue = Queue(path)
+            self.assertEqual(queue.stats()["total"], 1)
+            self.assertEqual(queue.get(ids[0]).payload, {"order": 42})
+
     def test_simultaneous_first_open_preserves_every_enqueue(self):
         context = multiprocessing.get_context("spawn")
         with tempfile.TemporaryDirectory() as directory:
@@ -88,6 +106,86 @@ class QueueTests(unittest.TestCase):
         job_id = self.queue.enqueue(payload)
         self.assertEqual(Queue(self.path).get(job_id).payload, payload)
         self.assertEqual(self.queue.get(job_id).attempts, 0)
+
+    def test_enqueue_key_persists_and_ignores_object_key_order(self):
+        job_id = self.queue.enqueue({"a": 1, "b": 2}, delay=10, idempotency_key="request")
+        self.now += 3
+        reopened = Queue(self.path, clock=lambda: self.now)
+        repeated = reopened.enqueue({"b": 2, "a": 1}, delay=10, idempotency_key="request")
+        self.assertEqual(repeated, job_id)
+        self.assertEqual(reopened.get(job_id).available_at, 1010)
+        self.assertEqual(reopened.stats()["total"], 1)
+
+    def test_enqueue_key_conflicts_leave_original_job_unchanged(self):
+        job_id = self.queue.enqueue({"value": True}, idempotency_key="request")
+        before = self.queue.get(job_id)
+        requests = [({"value": 1}, {}), ({"value": False}, {}),
+                    ({"value": True}, {"delay": 2}),
+                    ({"value": True}, {"retry_delay": 2}),
+                    ({"value": True}, {"max_attempts": 4})]
+        for payload, options in requests:
+            with self.subTest(payload=payload, options=options):
+                with self.assertRaisesRegex(ValueError, "different request"):
+                    self.queue.enqueue(payload, idempotency_key="request", **options)
+                self.assertEqual(self.queue.get(job_id), before)
+        self.assertEqual(self.queue.stats()["total"], 1)
+
+    def test_enqueue_key_never_restarts_running_or_terminal_jobs(self):
+        for terminal in ("succeeded", "failed"):
+            with self.subTest(terminal=terminal):
+                job_id = self.queue.enqueue({}, max_attempts=1, idempotency_key=terminal)
+                claim = self.queue.claim()
+                running = self.queue.get(job_id)
+                self.assertEqual(self.queue.enqueue({}, max_attempts=1,
+                                                   idempotency_key=terminal), job_id)
+                self.assertEqual(self.queue.get(job_id), running)
+                if terminal == "succeeded":
+                    self.queue.complete(claim)
+                else:
+                    self.queue.fail(claim, "permanent")
+                finished = self.queue.get(job_id)
+                self.assertEqual(self.queue.enqueue({}, max_attempts=1,
+                                                   idempotency_key=terminal), job_id)
+                self.assertEqual(self.queue.get(job_id), finished)
+
+    def test_enqueue_without_a_key_or_with_distinct_keys_creates_distinct_jobs(self):
+        ids = [self.queue.enqueue({}), self.queue.enqueue({}),
+               self.queue.enqueue({}, idempotency_key="first"),
+               self.queue.enqueue({}, idempotency_key="second")]
+        self.assertEqual(len(set(ids)), 4)
+
+    def test_invalid_enqueue_keys_do_not_create_jobs(self):
+        for key in ("", 0, False, []):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "nonempty string"):
+                self.queue.enqueue({}, idempotency_key=key)
+        self.assertEqual(self.queue.stats()["total"], 0)
+
+    def test_key_write_failure_rolls_back_job_insertion(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("""CREATE TRIGGER reject_key BEFORE INSERT ON enqueue_keys
+                BEGIN SELECT RAISE(ABORT, 'key write rejected'); END""")
+            db.commit()
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "key write rejected"):
+            self.queue.enqueue({}, idempotency_key="request")
+        self.assertEqual(self.queue.stats()["total"], 0)
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("DROP TRIGGER reject_key")
+            db.commit()
+        job_id = self.queue.enqueue({}, idempotency_key="request")
+        self.assertEqual(self.queue.enqueue({}, idempotency_key="request"), job_id)
+        self.assertEqual(self.queue.stats()["total"], 1)
+
+    def test_opening_an_existing_database_adds_keys_without_changing_jobs(self):
+        job_id = self.queue.enqueue({"old": True})
+        before = self.queue.get(job_id)
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("DROP TABLE enqueue_keys")
+            db.commit()
+        reopened = Queue(self.path, clock=lambda: self.now)
+        self.assertEqual(reopened.get(job_id), before)
+        keyed = reopened.enqueue({}, idempotency_key="new")
+        self.assertEqual(reopened.enqueue({}, idempotency_key="new"), keyed)
+        self.assertEqual(reopened.stats()["total"], 2)
 
     def test_delayed_job_does_not_block_ready_work(self):
         later = self.queue.enqueue("later", delay=10)
@@ -409,6 +507,18 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("workqueue:", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_enqueue_key_reuses_id_and_reports_conflicts(self):
+        first = self.run_cli("enqueue", '{"value":1}', "--idempotency-key", "request")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        repeated = self.run_cli("enqueue", '{"value":1}', "--idempotency-key", "request")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(first.stdout, repeated.stdout)
+        conflict = self.run_cli("enqueue", '{"value":2}', "--idempotency-key", "request")
+        self.assertEqual(conflict.returncode, 2)
+        self.assertIn("different request", conflict.stderr)
+        self.assertNotIn("Traceback", conflict.stderr)
+        self.assertEqual(Queue(self.path).stats()["total"], 1)
 
     def test_stats_command_reports_pending_jobs_as_json(self):
         self.assertEqual(self.run_cli("enqueue", "{}").returncode, 0)
