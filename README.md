@@ -92,6 +92,33 @@ queue adds the key table without changing its existing jobs. Producer
 deduplication does not prevent repeated handler side effects; delivery still
 requires idempotent handlers.
 
+## Example: publish a file safely on retry
+
+Run this from a directory containing a small UTF-8 file named `input.txt`:
+
+```python
+from hashlib import sha256
+from pathlib import Path
+
+from workqueue import Queue, work_once
+from workqueue.examples import write_snapshot
+
+source = Path("input.txt").read_text(encoding="utf-8")
+directory = str(Path("snapshots").resolve())
+digest = sha256(source.encode("utf-8")).hexdigest()
+queue = Queue("snapshots.sqlite3")
+queue.enqueue({"text": source, "directory": directory},
+              idempotency_key=f"snapshot:{directory}:{digest}")
+work_once(queue, write_snapshot)
+```
+
+The producer captures the text at enqueue time. A worker writes it to a
+temporary file beside the destination and atomically replaces the file named
+by its content hash. If a worker exits after replacement but before completing
+the job, a retry writes the same bytes to the same path. Different content
+gets a different path. A hard exit before replacement can leave a temporary
+file; this example does not guarantee durability across power loss.
+
 ## Claims and recovery
 
 Jobs move from `pending` to `running`, then to `succeeded` or back to `pending`.
