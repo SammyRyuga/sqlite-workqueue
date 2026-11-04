@@ -147,6 +147,17 @@ class Queue:
             raise KeyError(job_id)
         return self._job(row)
 
+    def failed_jobs(self, *, limit: int = 20) -> list[Job]:
+        """Return up to 1000 terminal failures, newest first."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM jobs WHERE state='failed' ORDER BY updated_at DESC, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._job(row) for row in rows]
+
     def stats(self) -> dict[str, int]:
         """Count queue states in one snapshot without recovering expired claims."""
         now = self.clock()

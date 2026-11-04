@@ -119,6 +119,14 @@ the job, a retry writes the same bytes to the same path. Different content
 gets a different path. A hard exit before replacement can leave a temporary
 file; this example does not guarantee durability across power loss.
 
+## Inspect failed jobs
+
+Run `workqueue --db jobs.sqlite3 failed --limit 10` to see recent terminal
+failures as a JSON array, including each job's payload and last error.
+The default limit is 20 and the accepted range is 1 to 1000. The command
+only reads job state, so expired claims and jobs waiting to retry stay out
+of this list. In Python, use `queue.failed_jobs(limit=10)`.
+
 ## Claims and recovery
 
 Jobs move from `pending` to `running`, then to `succeeded` or back to `pending`.
