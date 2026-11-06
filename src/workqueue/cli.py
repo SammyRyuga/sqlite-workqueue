@@ -25,6 +25,7 @@ def main(argv=None) -> int:
     commands.add_parser("stats", help="Count queue states without claiming or recovering jobs")
     failed = commands.add_parser("failed", help="Inspect recent terminal failures")
     failed.add_argument("--limit", type=int, default=20)
+    failed.add_argument("--after", metavar="JOB_ID", help="Continue after this failed job")
     worker = commands.add_parser("worker", help="Run a trusted Python handler")
     worker.add_argument("handler", help="module:function")
     worker.add_argument("--once", action="store_true")
@@ -44,7 +45,8 @@ def main(argv=None) -> int:
         elif args.command == "stats":
             print(json.dumps(queue.stats()))
         elif args.command == "failed":
-            print(json.dumps([asdict(job) for job in queue.failed_jobs(limit=args.limit)]))
+            jobs = queue.failed_jobs(limit=args.limit, after=args.after)
+            print(json.dumps([asdict(job) for job in jobs]))
         else:
             module, name = args.handler.split(":", 1)
             handler = getattr(importlib.import_module(module), name)

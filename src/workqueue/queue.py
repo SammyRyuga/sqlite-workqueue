@@ -147,15 +147,23 @@ class Queue:
             raise KeyError(job_id)
         return self._job(row)
 
-    def failed_jobs(self, *, limit: int = 20) -> list[Job]:
-        """Return up to 1000 terminal failures, newest first."""
+    def failed_jobs(self, *, limit: int = 20, after: str | None = None) -> list[Job]:
+        """Return terminal failures, optionally starting after a failed job ID."""
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("limit must be an integer between 1 and 1000")
+        query = "SELECT * FROM jobs WHERE state='failed'"
+        parameters = []
         with self._connect() as db:
-            rows = db.execute(
-                "SELECT * FROM jobs WHERE state='failed' ORDER BY updated_at DESC, id LIMIT ?",
-                (limit,),
-            ).fetchall()
+            if after is not None:
+                cursor = db.execute(
+                    "SELECT updated_at FROM jobs WHERE id=? AND state='failed'", (after,)
+                ).fetchone()
+                if cursor is None:
+                    raise ValueError("after must identify a failed job in this queue")
+                query += " AND (updated_at < ? OR (updated_at = ? AND id > ?))"
+                parameters.extend((cursor["updated_at"], cursor["updated_at"], after))
+            rows = db.execute(query + " ORDER BY updated_at DESC, id LIMIT ?",
+                              [*parameters, limit]).fetchall()
         return [self._job(row) for row in rows]
 
     def stats(self) -> dict[str, int]:

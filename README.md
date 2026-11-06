@@ -127,6 +127,11 @@ The default limit is 20 and the accepted range is 1 to 1000. The command
 only reads job state, so expired claims and jobs waiting to retry stay out
 of this list. In Python, use `queue.failed_jobs(limit=10)`.
 
+To continue, pass the last job ID in the previous batch to `failed --after JOB_ID`
+or `queue.failed_jobs(after=job_id)`. Jobs with the same failure time are ordered
+by ID. Each batch reads the current queue. Start again from the first batch to
+see failures that appeared before your cursor while you were paging.
+
 ## Claims and recovery
 
 Jobs move from `pending` to `running`, then to `succeeded` or back to `pending`.

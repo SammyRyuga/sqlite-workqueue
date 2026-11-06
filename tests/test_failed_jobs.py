@@ -10,6 +10,33 @@ from workqueue.cli import main
 
 
 class FailedJobsTests(unittest.TestCase):
+    def test_paging_with_tied_failure_times_and_a_new_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "jobs.sqlite3"
+            now = 1000
+            queue = Queue(path, clock=lambda: now)
+            older = queue.enqueue("older failure", max_attempts=1)
+            queue.fail(queue.claim(), "failed")
+            now += 1
+            ids = []
+            for i in range(3):
+                ids.append(queue.enqueue(i, max_attempts=1))
+                queue.fail(queue.claim(), "failed")
+            first = queue.failed_jobs(limit=1)[0]
+            self.assertEqual(first.id, min(ids))
+
+            now += 1
+            queue.enqueue("new failure", max_attempts=1)
+            queue.fail(queue.claim(), "failed")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["--db", str(path), "failed", "--after", first.id]), 0)
+            self.assertEqual([job["id"] for job in json.loads(output.getvalue())],
+                             sorted(ids)[1:] + [older])
+            self.assertEqual(queue.failed_jobs(after=older), [])
+            with self.assertRaisesRegex(ValueError, "failed job"):
+                queue.failed_jobs(after=queue.enqueue("pending"))
+
     def test_recent_terminal_failures_only(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "jobs.sqlite3"
