@@ -162,9 +162,10 @@ class Queue:
                 ).fetchone()
                 if cursor is None:
                     raise ValueError("after must identify a failed job in this queue")
-                # Bound the index scan before applying the timestamp tie-breaker.
-                query += " AND updated_at <= ? AND (updated_at < ? OR id > ?)"
-                parameters.extend((cursor["updated_at"], cursor["updated_at"], after))
+                # Separate ranges let the index seek past IDs within a large time tie.
+                query += (" AND updated_at = ? AND id > ? UNION ALL "
+                          "SELECT * FROM jobs WHERE state='failed' AND updated_at < ?")
+                parameters.extend((cursor["updated_at"], after, cursor["updated_at"]))
             rows = db.execute(query + " ORDER BY updated_at DESC, id LIMIT ?",
                               [*parameters, limit]).fetchall()
         return [self._job(row) for row in rows]
