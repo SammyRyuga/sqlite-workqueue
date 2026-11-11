@@ -74,8 +74,10 @@ def measure():
                         stamp = expected[position] // 4
                         query += (" AND (updated_at < ? OR (updated_at = ? AND id > ?))"
                                   if variant == "baseline" else
-                                  " AND updated_at <= ? AND (updated_at < ? OR id > ?)")
-                        parameters = [stamp, stamp, after]
+                                  " AND updated_at = ? AND id > ? UNION ALL "
+                                  "SELECT * FROM jobs WHERE state='failed' AND updated_at < ?")
+                        parameters = ([stamp, stamp, after] if variant == "baseline" else
+                                      [stamp, after, stamp])
                     with closing(sqlite3.connect(path)) as db:
                         plan = [row[3] for row in db.execute(
                             "EXPLAIN QUERY PLAN " + query + " ORDER BY updated_at DESC,id LIMIT 20",

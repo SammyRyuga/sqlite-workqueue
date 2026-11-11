@@ -1,4 +1,4 @@
-from contextlib import closing, redirect_stdout
+from contextlib import closing, contextmanager, redirect_stdout
 from io import StringIO
 import json
 import sqlite3
@@ -11,6 +11,39 @@ from workqueue.cli import main
 
 
 class FailedJobsTests(unittest.TestCase):
+    def test_deep_page_seeks_within_a_large_timestamp_tie(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = Queue(Path(directory) / "jobs.sqlite3")
+            with closing(sqlite3.connect(queue.path)) as db:
+                db.executemany("""INSERT INTO jobs
+                    (id,payload,state,max_attempts,retry_delay,available_at,created_at,updated_at)
+                    VALUES (?,'{}','failed',1,1,0,0,1000)""",
+                    ((f"{i:05d}",) for i in range(20000)))
+                db.execute("""INSERT INTO jobs
+                    (id,payload,state,max_attempts,retry_delay,available_at,created_at,updated_at)
+                    VALUES ('older','{}','failed',1,1,0,0,999)""")
+                db.commit()
+            instructions = 0
+            connect = queue._connect
+
+            def progress():
+                nonlocal instructions
+                instructions += 1000
+                return 0
+
+            @contextmanager
+            def counted_connection():
+                with connect() as db:
+                    db.set_progress_handler(progress, 1000)
+                    yield db
+
+            queue._connect = counted_connection
+            page = queue.failed_jobs(after="19989")
+            self.assertEqual([job.id for job in page],
+                             [f"{i:05d}" for i in range(19990, 20000)] + ["older"])
+            # A VM-work ceiling detects scanning the whole tie without a timing assertion.
+            self.assertLess(instructions, 20000)
+
     def test_reopening_an_existing_queue_adds_failure_index_without_changing_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "jobs.sqlite3"
