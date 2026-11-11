@@ -132,6 +132,12 @@ or `queue.failed_jobs(after=job_id)`. Jobs with the same failure time are ordere
 by ID. Each batch reads the current queue. Start again from the first batch to
 see failures that appeared before your cursor while you were paging.
 
+Opening an existing queue adds an ordering index for terminal failures without
+changing jobs or idempotency keys. The first open builds that index under a
+database write lock; allow time for this when upgrading a large queue. Later
+failures incur an additional index write. See the [pagination benchmark](docs/failure-pagination.md)
+for measurements, storage costs, and limits.
+
 ## Claims and recovery
 
 Jobs move from `pending` to `running`, then to `succeeded` or back to `pending`.

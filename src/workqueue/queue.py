@@ -75,6 +75,8 @@ class Queue:
                 );
                 CREATE INDEX IF NOT EXISTS pending_jobs ON jobs(state, available_at, created_at);
                 CREATE INDEX IF NOT EXISTS leased_jobs ON jobs(state, lease_until);
+                CREATE INDEX IF NOT EXISTS failed_jobs_order
+                    ON jobs(state, updated_at DESC, id) WHERE state='failed';
                 CREATE TABLE IF NOT EXISTS enqueue_keys (
                     key TEXT PRIMARY KEY,
                     request TEXT NOT NULL,
@@ -160,7 +162,8 @@ class Queue:
                 ).fetchone()
                 if cursor is None:
                     raise ValueError("after must identify a failed job in this queue")
-                query += " AND (updated_at < ? OR (updated_at = ? AND id > ?))"
+                # Bound the index scan before applying the timestamp tie-breaker.
+                query += " AND updated_at <= ? AND (updated_at < ? OR id > ?)"
                 parameters.extend((cursor["updated_at"], cursor["updated_at"], after))
             rows = db.execute(query + " ORDER BY updated_at DESC, id LIMIT ?",
                               [*parameters, limit]).fetchall()
