@@ -217,6 +217,4 @@ and [WAL constraints](https://www.sqlite.org/wal.html).
 
 ## Provenance and license
 
-Developed with OpenAI Codex assistance for design, implementation, documentation
-and automated testing. This does not imply the account owner manually authored
-or tested every line. MIT licensed; see [LICENSE](LICENSE).
+MIT licensed; see [LICENSE](LICENSE).
