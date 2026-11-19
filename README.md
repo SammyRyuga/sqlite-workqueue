@@ -35,6 +35,12 @@ print(queue.get(job_id).state)  # succeeded
 
 For your own worker, define a callable that accepts a decoded JSON payload:
 
+Handlers must run synchronously. Async functions and callable instances with
+async `__call__` methods are rejected before a job is claimed. If a synchronous
+wrapper returns an awaitable, the attempt fails instead of being acknowledged
+as successful. Run asynchronous work to completion inside a synchronous handler
+using an appropriate event loop adapter.
+
 ```python
 # my_handlers.py, in your current directory
 def handle(payload):

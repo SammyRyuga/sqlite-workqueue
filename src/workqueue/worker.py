@@ -1,3 +1,4 @@
+import inspect
 import threading
 from typing import Any, Callable
 
@@ -8,6 +9,9 @@ def work_once(queue: Queue, handler: Callable[[Any], None], *,
               lease_seconds: float = 60,
               heartbeat_interval: float | None = None) -> Job | None:
     """Run one job, optionally renewing its lease until the handler exits."""
+    if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
+            getattr(handler, "__call__", None)):
+        raise ValueError("handler must be synchronous; async handlers are not supported")
     lease_seconds = _seconds(lease_seconds, "lease_seconds", positive=True)
     if heartbeat_interval is not None:
         heartbeat_interval = _seconds(heartbeat_interval, "heartbeat_interval", positive=True)
@@ -33,7 +37,11 @@ def work_once(queue: Queue, handler: Callable[[Any], None], *,
         thread.start()
     handler_error = None
     try:
-        handler(job.payload)
+        result = handler(job.payload)
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+            raise TypeError("handler returned an awaitable; async handlers are not supported")
     except Exception as exc:
         handler_error = exc
     finally:
