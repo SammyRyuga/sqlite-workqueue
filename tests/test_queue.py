@@ -11,6 +11,7 @@ import sysconfig
 import tempfile
 import threading
 import unittest
+import warnings
 from unittest.mock import Mock, patch
 
 from workqueue import LeaseLost, Queue, work_once
@@ -360,6 +361,37 @@ class QueueTests(unittest.TestCase):
         self.assertFalse(any(t.name == f"workqueue-lease-{job_id}"
                              for t in threading.enumerate()))
 
+    def test_async_handlers_do_not_claim_jobs(self):
+        job_id = self.queue.enqueue({})
+
+        async def handler(payload):
+            self.fail("async handler must not run")
+
+        class AsyncHandler:
+            async def __call__(self, payload):
+                pass
+
+        for candidate in (handler, AsyncHandler()):
+            with self.subTest(handler=candidate), self.assertRaisesRegex(ValueError, "synchronous"):
+                work_once(self.queue, candidate, heartbeat_interval=1)
+        self.assertEqual(self.queue.get(job_id).attempts, 0)
+        self.assertEqual(self.queue.get(job_id).state, "pending")
+
+    def test_wrapped_async_handler_is_failed_without_coroutine_warning(self):
+        self.queue.enqueue({}, max_attempts=1)
+
+        async def handler(payload):
+            self.fail("coroutine must not run")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = work_once(self.queue, lambda payload: handler(payload), heartbeat_interval=1)
+        self.assertEqual(result.state, "failed")
+        self.assertIn("handler returned an awaitable", result.last_error)
+        self.assertEqual(caught, [])
+        self.assertFalse(any(t.name == f"workqueue-lease-{result.id}"
+                             for t in threading.enumerate()))
+
     def test_interruption_stops_heartbeat_without_acknowledgment(self):
         job_id = self.queue.enqueue({})
 
@@ -534,6 +566,18 @@ class CLITests(unittest.TestCase):
         job_id = result.stdout.strip()
         result = self.run_cli("worker", "no_such_module:handler", "--once")
         self.assertEqual(result.returncode, 2)
+        self.assertEqual(Queue(self.path).get(job_id).attempts, 0)
+
+    def test_async_handler_returns_clear_error_without_claiming(self):
+        directory = Path(self.temp.name)
+        (directory / "async_handlers.py").write_text(
+            "async def handle(payload):\n    raise RuntimeError('must run')\n",
+            encoding="utf-8")
+        job_id = self.run_cli("enqueue", "{}").stdout.strip()
+        result = self.run_cli("worker", "async_handlers:handle", "--once", cwd=directory)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("handler must be synchronous", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(Queue(self.path).get(job_id).attempts, 0)
 
     def test_invalid_heartbeat_does_not_claim_job(self):
