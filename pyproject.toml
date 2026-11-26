@@ -6,9 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "sqlite-workqueue"
 version = "0.1.0"
 description = "A local persistent job queue with leases and bounded retries"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []
+
+[project.urls]
+Source = "https://github.com/SammyRyuga/sqlite-workqueue"
+Issues = "https://github.com/SammyRyuga/sqlite-workqueue/issues"
+Documentation = "https://github.com/SammyRyuga/sqlite-workqueue#readme"
 
 [project.scripts]
 workqueue = "workqueue.cli:main"
