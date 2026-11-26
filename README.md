@@ -11,10 +11,16 @@ local batch processing and learning how durable worker coordination works.
 
 ## Try it
 
-Requires Python 3.11 or newer. From a checkout:
+Requires Python 3.11 or newer. Install the `sqlite-workqueue` distribution
+from PyPI. In Python, import `workqueue`.
 
 ```sh
-python -m pip install .
+python -m pip install sqlite-workqueue
+```
+
+In a new directory, enqueue a job, run a worker once, and inspect the result:
+
+```sh
 workqueue --db jobs.sqlite3 enqueue '{"message":"hello"}'
 workqueue --db jobs.sqlite3 worker workqueue.examples:echo --once
 workqueue --db jobs.sqlite3 show JOB_ID
@@ -33,13 +39,13 @@ work_once(queue, lambda payload: print(payload["message"]))
 print(queue.get(job_id).state)  # succeeded
 ```
 
-For your own worker, define a callable that accepts a decoded JSON payload:
-
 Handlers must run synchronously. Async functions and callable instances with
 async `__call__` methods are rejected before a job is claimed. If a synchronous
 wrapper returns an awaitable, the attempt fails instead of being acknowledged
 as successful. Run asynchronous work to completion inside a synchronous handler
 using an appropriate event loop adapter.
+
+For your own worker, define a callable that accepts a decoded JSON payload:
 
 ```python
 # my_handlers.py, in your current directory
@@ -141,7 +147,7 @@ see failures that appeared before your cursor while you were paging.
 Opening an existing queue adds an ordering index for terminal failures without
 changing jobs or idempotency keys. The first open builds that index under a
 database write lock; allow time for this when upgrading a large queue. Later
-failures incur an additional index write. See the [pagination benchmark](docs/failure-pagination.md)
+failures incur an additional index write. See the [pagination benchmark](https://github.com/SammyRyuga/sqlite-workqueue/blob/main/docs/failure-pagination.md)
 for measurements, storage costs, and limits.
 
 ## Claims and recovery
@@ -201,10 +207,19 @@ time; choose an interval that keeps the lease alive.
   error messages are stored in plaintext. Do not enqueue credentials or private
   records into a shared database.
 - There is no cancellation, periodic scheduling, schema migration system,
-  result storage or HTTP service yet. Database lock waits time out after five
+  result storage or HTTP service. Database lock waits time out after five
   seconds. Concurrent first-open WAL setup retries transient busy errors for up
-  to five seconds before propagating the error. This is an early implementation,
-  not a production reliability claim.
+  to five seconds before propagating the error. Reliability evidence comes from
+  the tests described below.
+
+## Maintenance status
+
+Feature development for the current scope is complete. This project is maintained
+for reproducible bugs, security issues, compatibility breakage affecting
+supported use, and explicitly requested changes. New features are outside the
+current maintenance scope.
+
+Report reproducible problems on the [issue tracker](https://github.com/SammyRyuga/sqlite-workqueue/issues).
 
 ## Development
 
@@ -216,11 +231,28 @@ python -m unittest discover -s tests -v
 Tests cover persistence, delayed availability, retries, lease fencing, lease
 renewal, handler failures, an abrupt worker process exit, competing worker
 processes and the CLI. The CI workflow runs these on Linux and Windows with
-Python 3.11 and 3.13. Workflow presence does not imply a successful hosted run.
+CPython 3.11 through 3.15.
 
 The design follows SQLite's [transaction documentation](https://www.sqlite.org/lang_transaction.html)
 and [WAL constraints](https://www.sqlite.org/wal.html).
 
+### Releasing a maintenance fix
+
+1. Update the version in `pyproject.toml` and add its notes to the
+   [changelog](https://github.com/SammyRyuga/sqlite-workqueue/blob/main/CHANGELOG.md).
+   Merge the release PR after CI passes.
+2. Check that the version is unused on PyPI and that the GitHub tag and release
+   are new. Tag the passing commit on `main` with the matching `vX.Y.Z` tag
+   and push the tag.
+3. On GitHub Actions, run **Release** from `main` with that tag. The workflow
+   tests the tagged commit, builds and checks both distributions, publishes to
+   PyPI through the `pypi` environment, verifies the PyPI installation, and
+   creates the GitHub release with the same files and SHA-256 checksums.
+4. Check that both public release pages show the intended version and files.
+   If the workflow stops after uploading, keep its validated artifacts, compare
+   them with the public files, and resume the failed step without re-uploading
+   files that are already public.
+
 ## Provenance and license
 
-MIT licensed; see [LICENSE](LICENSE).
+MIT licensed. See [LICENSE](https://github.com/SammyRyuga/sqlite-workqueue/blob/main/LICENSE).
